@@ -7,6 +7,7 @@ import com.tensorflow.siamese.models.User;
 import com.tensorflow.siamese.repositories.UserRepository;
 import com.tensorflow.siamese.services.EmbeddingService;
 import com.tensorflow.siamese.services.EnrollmentService;
+import com.tensorflow.siamese.util.VectorUtil;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,13 +39,15 @@ public class EnrollmentServiceImpl implements EnrollmentService {
                 .stream()
                 .map(image -> embeddingService.getEmbeddings(image))
                 .collect(Collectors.toList());
-        List<Double> embedding = matrixMean(embeddingsList);
+        List<Double> embedding = VectorUtil.l2Normalize(matrixMean(embeddingsList));
 
+        String embeddingJson = objectMapper.writeValueAsString(embedding);
         User user = new User()
                 .name(name)
                 .numImages(images.size())
                 .created(Instant.now())
-                .embedding(objectMapper.writeValueAsString(embedding));
+                .embedding(embeddingJson)
+                .embeddingVector(embeddingJson);  // ✅ Store in pgvector (cast to vector on write)
         userRepository.save(user);
         log.info("created new user: " + user.id());
         return user;
@@ -69,11 +72,14 @@ public class EnrollmentServiceImpl implements EnrollmentService {
                 .map(image -> embeddingService.getEmbeddings(image))
                 .collect(Collectors.toList());
         List<Double> embedding = matrixMean(embeddingsList);
+        List<Double> combined = VectorUtil.l2Normalize(
+                weightedMean(savedEmbeddings, savedNumImage, embedding, extraImagesNum));
+        String combinedJson = objectMapper.writeValueAsString(combined);
 
         user.modified(Instant.now())
                 .numImages(savedNumImage + extraImagesNum)
-                .embedding(objectMapper.writeValueAsString(weightedMean(savedEmbeddings, savedNumImage
-                        , embedding, extraImagesNum)));
+                .embedding(combinedJson)
+                .embeddingVector(combinedJson);  // ✅ keep pgvector column in sync after update
         userRepository.save(user);
         log.info("updated user: " + user.id());
         return user;
@@ -91,7 +97,7 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     private List<Double> weightedMean(List<Double> emb1, int w1, List<Double> emb2, int w2) {
         List<Double> embeddings = new ArrayList<>();
         for (int r = 0; r < emb1.size(); r++) {
-            embeddings.add((emb1.get(r) * w1 + emb2.get(r) * w1) / (w1 + w2));
+            embeddings.add((emb1.get(r) * w1 + emb2.get(r) * w2) / (w1 + w2));
         }
         return embeddings;
     }
